@@ -62,7 +62,7 @@ LOG_PATH = os.path.join(BASE_DIR, "app.log")
 os.makedirs(BASE_DIR, exist_ok=True)
 
 # 라이선스 서버 URL (환경변수로 오버라이드 가능)
-LICENSE_SERVER_URL = os.environ.get("POSTOCK_LICENSE_SERVER", "http://localhost:8080")
+LICENSE_SERVER_URL = os.environ.get("POSTOCK_LICENSE_SERVER", "http://127.0.0.1:8000")
 
 KST = pytz.timezone("Asia/Seoul")
 ET = pytz.timezone("US/Eastern")
@@ -336,7 +336,7 @@ def is_market_open(market: str, now: datetime | None = None) -> bool:
 def resource_path(rel_path: str) -> str:
     if hasattr(sys, "_MEIPASS"):
         return os.path.join(sys._MEIPASS, rel_path)
-    return os.path.join(os.path.abspath("."), rel_path)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), rel_path)
 
 
 # =========================================================

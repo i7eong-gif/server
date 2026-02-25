@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# client_py
+client_py/build/
+
 # Virtual env
 .venv/
 
@@ -11,6 +14,9 @@ Thumbs.db
 
 # Secrets
 .env
+
+# DB
+server/data/app.db
 
 # Fly
 .fly/
