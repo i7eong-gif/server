@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Width="520"
+        MinHeight="38"
         WindowStyle="None"
         ResizeMode="NoResize"
         Background="Transparent"

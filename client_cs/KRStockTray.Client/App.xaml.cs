@@ -94,13 +94,13 @@ namespace KRStockTray.Client  // Class의 상위 개념.“KRStockTray 프로젝
                 Text = "KRStockTray"
             };
 
-            _tray.DoubleClick += (_, _) => ToggleMainWindow();
+            _tray.DoubleClick += (_, _) => Dispatcher.Invoke(ToggleMainWindow);
 
             var menu = new WinForms.ContextMenuStrip();
-            menu.Items.Add("창 보이기/숨기기", null, (_, _) => ToggleMainWindow());
-            menu.Items.Add("설정", null, (_, _) => OpenSettings());
+            menu.Items.Add("창 보이기/숨기기", null, (_, _) => Dispatcher.Invoke(ToggleMainWindow));
+            menu.Items.Add("설정", null, (_, _) => Dispatcher.Invoke(OpenSettings));
             menu.Items.Add("-");
-            menu.Items.Add("종료", null, (_, _) => ExitApp());
+            menu.Items.Add("종료", null, (_, _) => Dispatcher.Invoke(ExitApp));
             _tray.ContextMenuStrip = menu;
 
             // ===============================
@@ -149,6 +149,8 @@ namespace KRStockTray.Client  // Class의 상위 개념.“KRStockTray 프로젝
         private void ShowMainWindow()
         {
             if (_mainWindow == null) return;
+
+            _mainWindow.Opacity = _settings?.Config.WindowOpacity ?? 0.85;
 
             if (!_mainWindow.IsVisible)
                 _mainWindow.Show();

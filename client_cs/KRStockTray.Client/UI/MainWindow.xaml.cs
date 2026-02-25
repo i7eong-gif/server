@@ -124,7 +124,8 @@ namespace KRStockTray.Client.UI
             foreach (var r in rows)
                 Quotes.Add(r);
 
-            Height = Quotes.Count * 26 + 12;
+            if (Quotes.Count > 0)
+                Height = Quotes.Count * 26 + 12;
 
             if (!_hasShownOnce && Quotes.Count > 0)
             {
@@ -132,7 +133,6 @@ namespace KRStockTray.Client.UI
                 Opacity = 1;
                 Show();
                 Activate();
-                //Show();
             }
         }
 
