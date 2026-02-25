@@ -1,0 +1,60 @@
+app/main.py
+ ├── routers/quote.py
+ │    ├── serial/dependencies.py
+ │    │     └── serial/service.py
+ │    │           ├── serial/repository.py
+ │    │           │     └── core/db.py
+ │    │           └── serial/code.py
+ │    │
+ │    ├── rate_limit/dependencies.py
+ │    │     └── policies/rate_limit.py
+ │    │
+ │    ├── providers/factory.py
+ │    │     ├── providers/kr/kr_provider.py
+ │    │     │     ├── providers/kr/kr_realtime.py
+ │    │     │     └── providers/kr/kr_daily.py
+ │    │     │
+ │    │     └── providers/us/us_provider.py
+ │    │           ├── providers/us/us_realtime.py
+ │    │           └── providers/us/us_daily.py
+ │    │
+ │    ├── core/response.py
+ │    ├── core/ads.py
+ │    └── core/exceptions.py
+ │
+ ├── routers/tray.py
+ │    ├── serial/dependencies.py
+ │    ├── rate_limit/dependencies.py
+ │    ├── providers/factory.py
+ │    ├── core/cache.py
+ │    └── core/response.py
+ │
+ ├── routers/activate.py
+ │    ├── serial/service.py
+ │    └── core/response.py
+ │
+ ├── admin/routers.py
+ │    ├── serial/service.py
+ │    ├── serial/repository.py
+ │    ├── core/auth.py
+ │    └── core/response.py
+ │
+ └── symbols/router.py
+      └── symbols/krx_provider.py
+
+
+Router
+  → Dependency
+      → SerialService
+          → Repository
+              → DB
+
+Router
+  → ProviderFactory
+      → KR/US Provider
+          → realtime / daily
+
+Router
+  → RateLimit
+      → policies
+
