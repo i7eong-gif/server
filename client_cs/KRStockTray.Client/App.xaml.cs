@@ -195,9 +195,9 @@ namespace KRStockTray.Client  // Class의 상위 개념.“KRStockTray 프로젝
         // ===============================
         // 종료
         // ===============================
-        private void ExitApp()
+        private async void ExitApp()
         {
-            try { _poller?.StopAsync(); } catch { }
+            try { if (_poller != null) await _poller.StopAsync(); } catch { }
             try { _tray?.Dispose(); } catch { }
 
             Shutdown();

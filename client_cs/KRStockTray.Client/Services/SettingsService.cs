@@ -55,10 +55,8 @@ namespace KRStockTray.Client.Services
             new SettingsService.WatchItem { Market = "KR", Code = "005930" }
         };
 
-        // 폴링 / 회전 주기
-        public int RotateSeconds { get; set; } = 10;
+        // 폴링 주기 (초)
         public int RefreshSeconds { get; set; } = 5;
-        public int PollIntervalSec { get; set; } = 5;
 
         // UI 상태 (위치/투명도)
         public double WindowOpacity { get; set; } = 0.85;

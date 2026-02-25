@@ -64,7 +64,10 @@ namespace KRStockTray.Client.Services
 
             // 2) Trial 자동 발급
             var trial = await _api.ActivateTrialAsync();
-            _settings.Config.Serial = trial.Data!.Serial;
+            if (trial?.Data?.Serial == null)
+                throw new InvalidOperationException("트라이얼 시리얼 발급에 실패했습니다.");
+
+            _settings.Config.Serial = trial.Data.Serial;
             _settings.Save();
 
             _api.SetSerial(trial.Data.Serial);
@@ -209,8 +212,6 @@ namespace KRStockTray.Client.Services
 
             var q = rows[_watchIndex];
             var text = q.TrayText;
-
-            try { _tray.Text = text; } catch { }
 
             if (text.Length > 63)
                 text = text.Substring(0, 63);
