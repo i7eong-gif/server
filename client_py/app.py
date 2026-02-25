@@ -8,12 +8,13 @@
 # - 트레이 아이콘 + 미니 주가 창 (항상 위 / 드래그 이동 / 투명도)
 # - 설정 창: 종목 추가/삭제/활성 + 순서 드래그 + 투명도 조절
 # - 장중( KR 또는 US ) 10초, 장외 30초 갱신
-# - 시리얼 라이선스: 최초 실행 시 트라이얼 자동 발급, 만료 시 종료
+# - 시리얼 라이선스: 최초 실행 시 트라이얼 자동 발급
+#                   시작 1분 후 서버에 시리얼 유효성 검증 (401 → 종료)
 #
-#  라이선스 흐름
-# - 최초 실행: POST /activate/trial → serial + expire_at 발급, config 저장
-# - 이후 실행: 로컬 expire_at 비교 → 만료 시 즉시 종료
-# - 운영 중:  1시간마다 로컬 만료 여부 재확인
+#  라이선스 흐름 (client_cs 동일)
+# - config: serial만 저장 (device_id 는 MachineName|UserName 해시로 매번 계산)
+# - 최초 실행: POST /activate/trial → serial 저장
+# - 시작 1분 후: GET /quote/... 로 시리얼 검증 → 401이면 종료, notice 있으면 알림
 #
 #  스레드 구조
 # - tkinter : UI 메인 스레드
@@ -34,10 +35,10 @@ import time
 import random
 import queue
 import winreg
+import hashlib
+import platform
 import threading
 import logging
-import hashlib
-import uuid
 from logging.handlers import TimedRotatingFileHandler
 from dataclasses import dataclass, asdict
 from datetime import datetime, time as dtime
@@ -62,9 +63,6 @@ os.makedirs(BASE_DIR, exist_ok=True)
 
 # 라이선스 서버 URL (환경변수로 오버라이드 가능)
 LICENSE_SERVER_URL = os.environ.get("POSTOCK_LICENSE_SERVER", "http://localhost:8080")
-
-# 운영 중 라이선스 재확인 주기 (초)
-LICENSE_CHECK_INTERVAL = 3600
 
 KST = pytz.timezone("Asia/Seoul")
 ET = pytz.timezone("US/Eastern")
@@ -118,79 +116,46 @@ def set_startup(enable: bool):
 # =========================================================
 # 라이선스
 # =========================================================
-def generate_device_id() -> str:
-    """MAC 주소 + 호스트명 + 사용자명을 조합한 기기 고유 해시 생성."""
-    import platform
-    parts = [
-        str(uuid.getnode()),
-        platform.node(),
-        os.environ.get("USERNAME", ""),
-        os.environ.get("COMPUTERNAME", ""),
-    ]
-    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
+class SerialExpiredError(Exception):
+    pass
 
 
 class LicenseManager:
     """
-    시리얼 라이선스 관리.
-    - 시세 요청은 providers.py(직접 스크래핑)가 담당.
-    - 서버는 최초 트라이얼 발급(/activate/trial)에만 사용.
-    - 이후 만료 여부는 로컬 expire_at으로 판단.
+    시리얼 라이선스 관리 (client_cs 구조 동일).
+    - device_id: SHA256(MachineName|UserName) → 대문자 hex, 저장하지 않고 매번 계산
+    - serial만 config에 저장
+    - 만료 감지: 시작 1분 후 서버에 한 종목 요청 → 401이면 SerialExpiredError
     """
 
     def __init__(self, server_url: str):
         self.server_url = server_url
         self.serial = ""
-        self.device_id = ""
-        self.expire_at = ""   # ISO UTC 문자열
-        self.plan = ""
+        self._device_id: Optional[str] = None   # lazy cache
         self._session = requests.Session()
-        self._expiry_notified = False  # 만료 임박 알림 세션당 1회
+        self._notice_shown = False
+
+    # ----------------------------------------------------------
+    @property
+    def device_id(self) -> str:
+        """C# DeviceService.GetDeviceHash()와 동일 알고리즘."""
+        if self._device_id is None:
+            machine = os.environ.get("COMPUTERNAME") or platform.node()
+            user = os.environ.get("USERNAME") or os.environ.get("USER", "")
+            raw = f"{machine}|{user}"
+            self._device_id = hashlib.sha256(raw.encode()).hexdigest().upper()
+        return self._device_id
 
     # ----------------------------------------------------------
     def load_from_config(self, cfg: "AppConfig"):
         self.serial = cfg.serial or ""
-        self.device_id = cfg.device_id or ""
-        self.expire_at = cfg.expire_at or ""
-        self.plan = cfg.plan or ""
 
     def save_to_config(self, cfg: "AppConfig"):
         cfg.serial = self.serial
-        cfg.device_id = self.device_id
-        cfg.expire_at = self.expire_at
-        cfg.plan = self.plan
-
-    # ----------------------------------------------------------
-    def is_expired(self) -> bool:
-        """로컬 expire_at으로 만료 여부 확인 (서버 호출 없음)."""
-        if not self.expire_at:
-            return False
-        try:
-            expire = datetime.fromisoformat(self.expire_at)
-            if expire.tzinfo is None:
-                expire = pytz.utc.localize(expire)
-            return datetime.now(pytz.utc) > expire
-        except Exception:
-            return False
-
-    def days_left(self) -> Optional[int]:
-        if not self.expire_at:
-            return None
-        try:
-            expire = datetime.fromisoformat(self.expire_at)
-            if expire.tzinfo is None:
-                expire = pytz.utc.localize(expire)
-            delta = expire - datetime.now(pytz.utc)
-            return max(0, delta.days)
-        except Exception:
-            return None
 
     # ----------------------------------------------------------
     def activate_trial(self) -> bool:
-        """
-        서버에서 트라이얼 시리얼 발급.
-        기기당 1회, 재실행 시 기존 시리얼 재사용.
-        """
+        """서버에서 트라이얼 시리얼 발급 (기기당 1회, 재실행 시 기존 재사용)."""
         try:
             resp = self._session.post(
                 f"{self.server_url}/activate/trial",
@@ -200,12 +165,7 @@ class LicenseManager:
             if resp.status_code == 200:
                 data = resp.json().get("data", {})
                 self.serial = data.get("serial", "")
-                self.expire_at = data.get("expire_at", "")
-                self.plan = data.get("plan", "trial")
-                logging.info(
-                    "License: activated serial=%s plan=%s expire=%s",
-                    self.serial, self.plan, self.expire_at,
-                )
+                logging.info("License: activated serial=%s", self.serial)
                 return bool(self.serial)
             logging.warning("License: activate_trial HTTP %s", resp.status_code)
         except Exception as e:
@@ -213,17 +173,45 @@ class LicenseManager:
         return False
 
     # ----------------------------------------------------------
-    def check_expiry_notify(self):
-        """만료 3일 이내 시 알림 (세션당 1회)."""
-        if self._expiry_notified:
-            return
-        days = self.days_left()
-        if days is not None and days <= 3:
-            notify(
-                "라이선스 만료 예정",
-                f"무료 체험 기간이 {days}일 후 만료됩니다.",
+    def validate_with_server(
+        self, market: str, code: str
+    ) -> Tuple[Optional[dict], Optional[dict]]:
+        """
+        서버에 시리얼 유효성 검증 (GET /quote/{market}/{code} 활용).
+        반환: (data, notice)
+        401이면 SerialExpiredError 발생.
+        네트워크 오류 등이면 (None, None) 반환.
+        """
+        if not self.serial:
+            return None, None
+        try:
+            resp = self._session.get(
+                f"{self.server_url}/quote/{market}/{code}",
+                headers={"X-Serial": self.serial, "X-Device": self.device_id},
+                timeout=10,
             )
-            self._expiry_notified = True
+            if resp.status_code == 401:
+                raise SerialExpiredError("Serial expired or invalid")
+            if resp.status_code != 200:
+                logging.warning("License: validate HTTP %s", resp.status_code)
+                return None, None
+            body = resp.json()
+            return body.get("data"), body.get("notice")
+        except SerialExpiredError:
+            raise
+        except Exception as e:
+            logging.warning("License: validate_with_server failed: %s", e)
+            return None, None
+
+    # ----------------------------------------------------------
+    def handle_notice(self, notice: Optional[dict]):
+        """trial_expiring 알림 세션당 1회."""
+        if not notice or self._notice_shown:
+            return
+        if notice.get("type") == "trial_expiring":
+            days = notice.get("days_left", 0)
+            notify("라이선스 만료 예정", f"무료 체험 기간이 {days}일 후 만료됩니다.")
+            self._notice_shown = True
 
 
 # =========================================================
@@ -244,10 +232,7 @@ class AppConfig:
     price_window_pos: Optional[dict] = None
     price_alpha_idle: float = 0.65
     notify_threshold_pct: float = 1.5
-    serial: str = ""      # 라이선스 시리얼
-    device_id: str = ""   # 기기 해시
-    expire_at: str = ""   # ISO UTC 만료일시
-    plan: str = ""        # trial / free / pro / enterprise
+    serial: str = ""   # 라이선스 시리얼 (client_cs AppConfig.Serial 과 동일)
 
     @staticmethod
     def default():
@@ -290,9 +275,6 @@ def load_config() -> AppConfig:
             price_alpha_idle=float(raw.get("price_alpha_idle", 0.65)),
             notify_threshold_pct=float(raw.get("notify_threshold_pct", 1.5)),
             serial=str(raw.get("serial", "")),
-            device_id=str(raw.get("device_id", "")),
-            expire_at=str(raw.get("expire_at", "")),
-            plan=str(raw.get("plan", "")),
         )
     except Exception as e:
         logging.exception("config load failed: %s", e)
@@ -312,9 +294,6 @@ def save_config(cfg: AppConfig):
                     "price_alpha_idle": cfg.price_alpha_idle,
                     "notify_threshold_pct": cfg.notify_threshold_pct,
                     "serial": cfg.serial,
-                    "device_id": cfg.device_id,
-                    "expire_at": cfg.expire_at,
-                    "plan": cfg.plan,
                 },
                 f,
                 ensure_ascii=False,
@@ -326,9 +305,6 @@ def save_config(cfg: AppConfig):
 # 장중 판단 (휴일 무시, 주말만 처리)
 # =========================================================
 def is_market_open(market: str, now: datetime | None = None) -> bool:
-    """
-    market: "KR" | "US"
-    """
     if market == "KR":
         tz = KST
         start_t = dtime(9, 00)
@@ -358,12 +334,10 @@ def is_market_open(market: str, now: datetime | None = None) -> bool:
 # 트레이 아이콘 이미지
 # =========================================================
 def resource_path(rel_path: str) -> str:
-    """
-    PyInstaller 대응 리소스 경로
-    """
     if hasattr(sys, "_MEIPASS"):
         return os.path.join(sys._MEIPASS, rel_path)
     return os.path.join(os.path.abspath("."), rel_path)
+
 
 # =========================================================
 # 메인 앱
@@ -385,20 +359,9 @@ class StockTrayApp:
         self.license = LicenseManager(LICENSE_SERVER_URL)
         self.license.load_from_config(self.cfg)
 
-        # 기기 ID 최초 생성
-        if not self.license.device_id:
-            self.license.device_id = generate_device_id()
-            self.license.save_to_config(self.cfg)
-            save_config(self.cfg)
-
         self._license_error: Optional[str] = None
-        self._serial_expired = False
 
-        if self.license.serial:
-            # 기존 시리얼 → 로컬 만료 확인
-            if self.license.is_expired():
-                self._serial_expired = True
-        else:
+        if not self.license.serial:
             # 시리얼 없음 → 트라이얼 발급 시도
             ok = self.license.activate_trial()
             if ok:
@@ -412,9 +375,6 @@ class StockTrayApp:
                 )
         # ---- 라이선스 초기화 끝 ----
 
-        # 운영 중 라이선스 재확인 타이머
-        self._last_license_check = time.time()
-
         # providers
         self.provider_kr = QuoteProviderKR()
         self.provider_us = QuoteProviderUS()
@@ -423,34 +383,24 @@ class StockTrayApp:
         self.cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self.cache_lock = threading.Lock()
 
-        # refresh serialize lock (worker + manual refresh 충돌 방지)
         self.refresh_lock = threading.Lock()
 
-        # tk bridge queue: str 또는 tuple(command, ...)
         self.tk_queue: "queue.Queue[Any]" = queue.Queue()
 
         self.running = True
-
         self._rr_index = 0
 
-        # 네트워크 전용 풀
         self.executor = ThreadPoolExecutor(max_workers=6)
 
-        # windows
         self._settings_win = None
         self._price_win = None
-
-        # 주가창 숨김 상태
         self.price_hidden = False
 
-        # alpha
         self.price_alpha_active = 1.0
         self.price_alpha_idle = float(getattr(self.cfg, "price_alpha_idle", 0.65))
 
-        # notify bucket
         self.last_bucket: Dict[Tuple[str, str], int] = {}
 
-        # 초기 캐시 / 이름 비어있으면 백그라운드로 이름 채우기
         for w in self.cfg.watchlist:
             with self.cache_lock:
                 self.cache[(w.market, w.code)] = {"status": "loading", "ts": ""}
@@ -460,31 +410,23 @@ class StockTrayApp:
 
         save_config(self.cfg)
 
-        # tray icon/menu
         tray_icon_path = resource_path("tray.ico")
         tray_image = Image.open(tray_icon_path)
         self.icon = pystray.Icon(APP_NAME, tray_image, APP_NAME, self._build_menu())
 
-        # worker thread
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
 
     def get_provider(self, market: str):
         return self.provider_us if market == "US" else self.provider_kr
 
     # -----------------------------------------------------
-    # 라이선스 다이얼로그 (tk 초기화 후 호출)
+    # 라이선스 다이얼로그
     # -----------------------------------------------------
     def _show_expired_and_quit(self):
         from tkinter import messagebox
-        expire_str = ""
-        if self.license.expire_at:
-            try:
-                expire_str = f"\n만료일: {self.license.expire_at[:10]}"
-            except Exception:
-                pass
         messagebox.showerror(
             "라이선스 만료",
-            f"사용 기간이 만료되었습니다.{expire_str}\n\n"
+            "사용 기간이 만료되었습니다.\n\n"
             "계속 사용하시려면 라이선스를 갱신해 주세요.",
         )
         self._quit()
@@ -493,6 +435,26 @@ class StockTrayApp:
         from tkinter import messagebox
         messagebox.showerror("라이선스 오류", msg)
         self._quit()
+
+    # -----------------------------------------------------
+    # 시작 1분 후 서버 시리얼 검증
+    # -----------------------------------------------------
+    def _validate_license(self):
+        """시작 1분 후 한 종목으로 서버에 시리얼 유효성 검증."""
+        watchlist = [w for w in self.cfg.watchlist if w.enabled]
+        if not watchlist:
+            return
+
+        w = watchlist[0]
+        try:
+            _, notice = self.license.validate_with_server(w.market, w.code)
+        except SerialExpiredError:
+            logging.warning("License: serial expired (server validation)")
+            self.running = False
+            self.tk_queue.put("SERIAL_EXPIRED")
+            return
+
+        self.license.handle_notice(notice)
 
     # -----------------------------------------------------
     # Tray menu
@@ -537,7 +499,7 @@ class StockTrayApp:
         return now_dt.strftime("%H:%M:%S") if is_market_open(w.market, now_dt) else "CLOSE"
 
     # -----------------------------------------------------
-    # 백그라운드: 이름 조회 (UI 멈춤 방지 핵심)
+    # 백그라운드: 이름 조회
     # -----------------------------------------------------
     def _async_resolve_name(self, market: str, code: str):
 
@@ -548,8 +510,7 @@ class StockTrayApp:
                 else:
                     provider = self.get_provider(market)
                     nm = provider.get_name(code)
-
-            except Exception as e:
+            except Exception:
                 nm = code
 
             self.tk_queue.put(("UPDATE_WATCH_NAME", market, code, nm or code))
@@ -563,17 +524,6 @@ class StockTrayApp:
         logging.info("WORKER: advanced scheduler started")
 
         while self.running:
-
-            # 주기적 라이선스 만료 확인
-            now_ts = time.time()
-            if now_ts - self._last_license_check >= LICENSE_CHECK_INTERVAL:
-                self._last_license_check = now_ts
-                if self.license.is_expired():
-                    logging.warning("License: expired detected in worker loop")
-                    self.running = False
-                    self.tk_queue.put("SERIAL_EXPIRED")
-                    return
-                self.license.check_expiry_notify()
 
             watchlist = [w for w in self.cfg.watchlist if w.enabled]
             if not watchlist:
@@ -628,7 +578,6 @@ class StockTrayApp:
     # refresh all (네트워크/병렬)
     # -----------------------------------------------------
     def _refresh_all(self):
-        # worker/수동 refresh 겹치면 서로 꼬일 수 있으니 serialize
         if not self.refresh_lock.acquire(blocking=False):
             return
         try:
@@ -638,7 +587,6 @@ class StockTrayApp:
             if not watchlist:
                 return
 
-            # 1) loading 표기
             with self.cache_lock:
                 for w in watchlist:
                     self.cache[(w.market, w.code)] = {
@@ -646,7 +594,6 @@ class StockTrayApp:
                         "ts": self._make_ts(w, now_dt),
                     }
 
-            # 2) 병렬 조회
             futures = {}
             for w in watchlist:
                 provider = self.get_provider(w.market)
@@ -656,14 +603,8 @@ class StockTrayApp:
                     fut = self.executor.submit(provider.get_quote, w.code)
                 futures[fut] = w
 
-                logging.info(
-                    "REFRESH %s %s provider=%s",
-                    w.market,
-                    w.code,
-                    provider.__class__.__name__,
-                )
+                logging.info("REFRESH %s %s provider=%s", w.market, w.code, provider.__class__.__name__)
 
-            # 3) 결과 수집
             for fut in as_completed(futures):
                 w = futures[fut]
                 ts = self._make_ts(w, datetime.now())
@@ -692,9 +633,8 @@ class StockTrayApp:
                     self._maybe_notify(w, price, pct)
                 else:
                     with self.cache_lock:
-                        self.cache[(w.market, w.code)] = {"status": "error", "ts": ts, "rev": time.time(),}
+                        self.cache[(w.market, w.code)] = {"status": "error", "ts": ts, "rev": time.time()}
 
-            # 4) UI/메뉴 갱신 트리거
             self.tk_queue.put("REFRESH_MENU")
 
         finally:
@@ -709,7 +649,6 @@ class StockTrayApp:
     def _refresh_one(self, w: WatchItem):
         now_dt = datetime.now()
 
-        # loading 표시
         with self.cache_lock:
             self.cache[(w.market, w.code)] = {
                 "status": "loading",
@@ -784,7 +723,6 @@ class StockTrayApp:
             while True:
                 cmd = self.tk_queue.get_nowait()
 
-                # tuple command 처리
                 if isinstance(cmd, tuple):
                     op = cmd[0]
 
@@ -802,7 +740,6 @@ class StockTrayApp:
                             self.tk_queue.put("REFRESH_MENU")
                     continue
 
-                # string command 처리
                 if cmd == "SERIAL_EXPIRED":
                     self._show_expired_and_quit()
 
@@ -842,7 +779,6 @@ class StockTrayApp:
         import tkinter as tk
         from tkinter import ttk
 
-        # 이미 열려 있으면 복원
         if self._price_win and self._price_win.winfo_exists():
             if self.price_hidden:
                 self.price_hidden = False
@@ -922,9 +858,6 @@ class StockTrayApp:
             win.attributes("-topmost", False)
             win.attributes("-alpha", self.price_alpha_idle)
 
-        # -----------------------------
-        # body
-        # -----------------------------
         body = ttk.Frame(frm)
         body.pack(fill="both", expand=True)
 
@@ -963,7 +896,6 @@ class StockTrayApp:
                     "vol_lbl": vol_lbl,
                 })
 
-                # 드래그/우클릭 동일 동작
                 for widget in (name_lbl, price_lbl, diff_lbl, pct_lbl, vol_lbl):
                     widget.bind("<ButtonPress-1>", on_press, add="+")
                     widget.bind("<B1-Motion>", on_motion, add="+")
@@ -976,7 +908,6 @@ class StockTrayApp:
             if not win.winfo_exists():
                 return
 
-            # 종목 구조 변경 감지
             current_codes = [(w.market, w.code) for w in self.cfg.watchlist if w.enabled]
             if current_codes != last_codes:
                 rebuild_rows()
@@ -988,13 +919,12 @@ class StockTrayApp:
                     st = self.cache.get(key, {})
 
                 price = st.get("price")
-                prev_close  = st.get("prev_close")
-                vol   = st.get("volume")
+                prev_close = st.get("prev_close")
+                vol = st.get("volume")
 
                 if price is None:
                     continue
 
-                # diff 계산
                 diff = price - prev_close
 
                 if price and prev_close != 0:
@@ -1002,10 +932,8 @@ class StockTrayApp:
                 else:
                     pct = 0.0
 
-                # 색상
                 fg = "#c00000" if pct > 0 else "#0040c0" if pct < 0 else "black"
 
-                # PRICE / DIFF
                 if row["market"] == "US":
                     row["price_lbl"].config(text=f"{price:,.2f}", foreground=fg)
                     row["diff_lbl"].config(text=f"{diff:+.2f}", foreground=fg)
@@ -1020,7 +948,6 @@ class StockTrayApp:
 
             win.after(500, refresh_rows)
 
-        # 바깥 영역 바인딩
         for wdg in (win, frm, body):
             wdg.bind("<Enter>", on_enter)
             wdg.bind("<Leave>", on_leave)
@@ -1029,11 +956,9 @@ class StockTrayApp:
             wdg.bind("<ButtonRelease-1>", on_release)
             wdg.bind("<Button-3>", lambda e: self.tk_queue.put("OPEN_SETTINGS"))
 
-        # 반드시 호출
         rebuild_rows()
         refresh_rows()
 
-        # 위치 복원/중앙 배치
         win.update_idletasks()
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         ww, wh = win.winfo_width(), win.winfo_height()
@@ -1048,13 +973,11 @@ class StockTrayApp:
 
         win.geometry(f"+{x}+{y}")
 
-        # 표시/포커스
         win.deiconify()
         win.lift()
         win.attributes("-topmost", True)
         win.after(200, lambda: win.attributes("-topmost", False))
         self.tk_queue.put("REFRESH_MENU")
-
 
     # -----------------------------------------------------
     # 설정창
@@ -1072,10 +995,9 @@ class StockTrayApp:
         win = tk.Toplevel(self.tk_root)
         self._settings_win = win
         win.title("종목 설정")
-        win.geometry("540x620")
+        win.geometry("540x600")
         win.resizable(False, False)
 
-        # 중앙 배치 (처음부터 한 번만)
         win.update_idletasks()
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         ww, wh = win.winfo_width(), win.winfo_height()
@@ -1097,7 +1019,6 @@ class StockTrayApp:
         lb.pack(side="left", fill="x", expand=True)
         scroll.pack(side="right", fill="y")
 
-        # 순서 드래그
         drag_index = {"from": None}
 
         def on_lb_button_down(event):
@@ -1123,7 +1044,6 @@ class StockTrayApp:
         lb.bind("<B1-Motion>", on_lb_motion)
         lb.bind("<ButtonRelease-1>", on_lb_button_up)
 
-        # 투명도
         ttk.Separator(frm).pack(fill="x", pady=(12, 8))
         alpha_frame = ttk.Frame(frm)
         alpha_frame.pack(fill="x")
@@ -1158,38 +1078,16 @@ class StockTrayApp:
         scale.pack(fill="x", pady=4)
         scale.bind("<ButtonRelease-1>", on_alpha_release)
 
-        # 라이선스 정보
-        ttk.Separator(frm).pack(fill="x", pady=(12, 4))
-        lic_frame = ttk.Frame(frm)
-        lic_frame.pack(fill="x", pady=(0, 4))
-        plan_text = self.license.plan or "-"
-        days = self.license.days_left()
-        if days is not None:
-            expire_text = f"만료까지 {days}일"
-        elif self.license.expire_at:
-            expire_text = f"만료: {self.license.expire_at[:10]}"
-        else:
-            expire_text = "무기한"
-        ttk.Label(
-            lic_frame,
-            text=f"라이선스: {plan_text}  |  {expire_text}",
-            foreground="gray",
-        ).pack(anchor="w")
-
-        # 리스트 갱신
         def refresh_list():
             lb.delete(0, tk.END)
 
             for idx, w in enumerate(self.cfg.watchlist):
-                flag = ""
                 nm = w.name or w.code
-
-                lb.insert(tk.END, f"{flag} {nm} ({w.code})")
+                lb.insert(tk.END, f" {nm} ({w.code})")
 
                 if not w.enabled:
                     lb.itemconfig(idx, fg="gray")
 
-        # ---- 종목 추가(코드)
         def add_by_code():
             if len(self.cfg.watchlist) >= 30:
                 messagebox.showwarning("제한", "감시 종목은 최대 30개까지 추가할 수 있습니다.")
@@ -1231,11 +1129,9 @@ class StockTrayApp:
             refresh_list()
 
             self._async_resolve_name(market, code)
-
             self.tk_queue.put("REFRESH_MENU")
             self.executor.submit(self._refresh_all)
 
-        # ---- 종목 검색(한국명)
         def search_by_name():
             if len(self.cfg.watchlist) >= 30:
                 messagebox.showwarning("제한", "감시 종목은 최대 30개까지 추가할 수 있습니다.")
@@ -1291,7 +1187,6 @@ class StockTrayApp:
             top.grab_set()
             top.focus_force()
 
-        # ---- 삭제/토글
         def remove_selected():
             sel = lb.curselection()
             if not sel:
@@ -1317,7 +1212,6 @@ class StockTrayApp:
             self.tk_queue.put("REFRESH_MENU")
             self.executor.submit(self._refresh_all)
 
-        # 자동 실행
         startup_var = tk.BooleanVar()
 
         def load_startup():
@@ -1338,7 +1232,6 @@ class StockTrayApp:
             anchor="w", pady=6
         )
 
-        # 버튼
         btnrow = ttk.Frame(frm)
         btnrow.pack(fill="x", pady=6)
 
@@ -1351,7 +1244,6 @@ class StockTrayApp:
 
         refresh_list()
 
-        # 포커스/가시성
         win.update_idletasks()
         win.deiconify()
         win.lift()
@@ -1360,32 +1252,28 @@ class StockTrayApp:
         win.focus_force()
 
     # -----------------------------------------------------
-    # 종료 (트레이 종료 안 먹는 문제 방지)
+    # 종료
     # -----------------------------------------------------
     def _quit(self):
         logging.info("APP: quitting")
         self.running = False
 
-        # executor 종료
         try:
             self.executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
 
-        # tray icon stop
         try:
             self.icon.stop()
         except Exception:
             pass
 
-        # tk 종료는 반드시 메인스레드에서
         try:
             self.tk_root.after(0, self.tk_root.quit)
             self.tk_root.after(0, self.tk_root.destroy)
         except Exception:
             pass
 
-        # exe에서 남는 경우 최후 수단
         try:
             os._exit(0)
         except Exception:
@@ -1401,21 +1289,15 @@ class StockTrayApp:
         self.tk_root = tk.Tk()
         self.tk_root.withdraw()
 
-        # 🔥 아이콘 설정 추가
         icon_path = resource_path("icon.ico")
         try:
             img = ImageTk.PhotoImage(Image.open(icon_path))
             self.tk_root.iconphoto(True, img)
-            self._tk_icon_img = img  # ← GC 방지 (중요)
+            self._tk_icon_img = img
         except Exception as e:
             logging.exception("icon load failed: %s", e)
 
-        # 라이선스 오류가 있으면 즉시 알림 후 종료
-        if self._serial_expired:
-            self.tk_root.after(100, self._show_expired_and_quit)
-            self.tk_root.mainloop()
-            return
-
+        # 라이선스 활성화 실패 시 즉시 종료
         if self._license_error:
             self.tk_root.after(100, lambda: self._show_license_error_and_quit(self._license_error))
             self.tk_root.mainloop()
@@ -1435,5 +1317,8 @@ class StockTrayApp:
 
         # worker 시작
         self.tk_root.after(800, self.worker.start)
+
+        # 시작 1분 후 서버에 시리얼 유효성 검증
+        self.tk_root.after(60_000, lambda: self.executor.submit(self._validate_license))
 
         self.tk_root.mainloop()
