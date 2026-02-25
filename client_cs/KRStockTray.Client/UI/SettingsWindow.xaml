@@ -1,0 +1,106 @@
+<Window x:Class="KRStockTray.Client.UI.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="종목 설정"
+        Width="520"
+        Height="420"
+        WindowStartupLocation="CenterOwner">
+
+	<Grid Margin="10">
+		<Grid.RowDefinitions>
+			<RowDefinition Height="*"/>
+			<RowDefinition Height="Auto"/>
+		</Grid.RowDefinitions>
+
+		<!-- 감시 종목 -->
+		<GroupBox Header="감시 종목">
+			<DockPanel>
+
+				<!-- 리스트 -->
+                <ListView x:Name="WatchListView"
+                            DockPanel.Dock="Top"
+                            Height="200"
+                            ItemsSource="{Binding WatchList}"
+                            PreviewMouseLeftButtonDown="WatchList_PreviewMouseLeftButtonDown"
+                            MouseMove="WatchList_MouseMove"
+                            AllowDrop="True"
+                            Drop="WatchList_Drop">
+                    <ListView.ItemTemplate>
+						<DataTemplate>
+							<StackPanel Orientation="Horizontal">
+								<CheckBox IsChecked="{Binding IsEnabled}"
+                                          Margin="0,0,6,0"/>
+								<TextBlock Text="{Binding DisplayText}"/>
+							</StackPanel>
+						</DataTemplate>
+					</ListView.ItemTemplate>
+				</ListView>
+
+				<!-- 버튼 -->
+				<StackPanel DockPanel.Dock="Bottom"
+                            Orientation="Horizontal"
+                            Margin="0,8,0,0">
+					<Button Content="코드로 추가"
+                            Width="140"
+                            Margin="0,0,6,0"
+                            Click="AddByCode_Click"/>
+                    <Button Content="종목명으로 추가(KR)"
+							Width="140"
+							Margin="0,0,6,0"
+							Click="AddByNameKr_Click"/>
+                    <Button Content="삭제"
+                            Width="80"
+                            Margin="0,0,6,0"
+                            Click="Remove_Click"/>
+                    <Button Content="활성/비활성"
+                            Width="100"
+                            Click="Toggle_Click"/>
+                </StackPanel>
+			</DockPanel>
+		</GroupBox>
+
+		<!-- 하단 옵션 -->
+		<StackPanel Grid.Row="1" Margin="0,12,0,0">
+
+			<!-- 투명도 -->
+			<TextBlock Text="주가창 투명도"/>
+			<StackPanel Orientation="Horizontal">
+				<Slider x:Name="AlphaSlider"
+                        Minimum="0.1"
+                        Maximum="1.0"
+                        Width="480"
+                        ValueChanged="AlphaSlider_ValueChanged"/>
+				<TextBlock x:Name="AlphaText"
+                           Width="60"
+                           Margin="8,0,0,0"/>
+			</StackPanel>
+
+			<!-- 시작 프로그램 -->
+			<CheckBox x:Name="AutoStartCheck"
+                      Content="Windows 시작 시 자동 실행"
+                      Margin="0,8,0,0"/>
+
+			<!-- 하단 버튼 -->
+			<StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Margin="0,10,0,0">
+                <Button Content="닫기"
+                    Width="90"
+                    Click="Close_Click"/>
+            </StackPanel>
+
+			<!-- 광고 영역 -->
+			<Border Margin="0,12,0,0"
+                    Height="60"
+                    Background="#EEE"
+                    Visibility="Collapsed"
+                    x:Name="AdArea">
+				<TextBlock Text="광고 영역 (ad_banner.png)"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+			</Border>
+
+		</StackPanel>
+	</Grid>
+</Window>
+

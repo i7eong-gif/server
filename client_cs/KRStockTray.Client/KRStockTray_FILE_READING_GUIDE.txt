@@ -1,0 +1,192 @@
+KRStockTray – 파일 읽기 가이드 (개발자용)
+
+이 문서는 KRStockTray 프로그램을 처음 접하는 개발자가
+전체 구조를 빠르게 이해하기 위해 어떤 파일을 어떤 순서로
+읽어야 하는지를 안내한다.
+
+========================================
+1. App.xaml.cs  (엔트리 포인트)
+========================================
+가장 먼저 볼 파일.
+
+namespace KRStockTray.Client 
+	public partial class App : System.Windows.Application
+		protected override async void OnStartup(StartupEventArgs e)	시작 (실행, 설정값 로드, KR 종목캐시 초기화, 아이콘, 주가창, 주문신호생성기)
+		private void ToggleMainWindow()					주가창 표시/숨김
+		private void ShowMainWindow()					주가창 최소화/일반화
+		private void OpenSettings()					설정창 표시
+		private void ExitApp() 						종료
+
+역할:
+- 단일 인스턴스 보장 (Mutex)
+- SettingsService 초기화
+- KR 종목 캐시 초기화
+- NotifyIcon(트레이 아이콘) 생성
+- MainWindow / SettingsWindow 생성 시점 관리
+
+이 파일을 보면:
+- 프로그램이 언제 시작되고
+- 어떤 서비스가 먼저 준비되며
+- 왜 주가창이 처음에는 숨겨져 있는지
+를 이해할 수 있다.
+
+----------------------------------------
+읽을 때 포인트:
+- ShutdownMode = OnExplicitShutdown
+- MainWindow는 즉시 Show하지 않는다
+- QuotePoller 생성/시작 타이밍
+
+
+========================================
+2. SettingsService.cs  (상태의 중심)
+========================================
+이 프로그램의 '단일 진실 공급원(Single Source of Truth)'
+
+namespace KRStockTray.Client.Services
+	public sealed class AppConfig						설정 (서버주소, 시리얼, 디폴트 감시목록, 감시주기, 투명도, 창위치)
+		public ObservableCollection<SettingsService.WatchItem>	 	사용자가 감시하는 종목 속성 (속성 값이 바뀌었음을 실시간으로 UI에게 알려줌)
+	public sealed class SettingsService 					AppConfig 관리. 
+		public SettingsService()					config.json용 path 설정
+		public sealed class WatchItem					WatchItem 규정. INotifyPropertyChanged는 속성이 바뀌었음을 알려주는 규약
+		public void LoadOrCreate()					설정을 로드하거나 없으면 생성한다.
+		public void Save()						설정(config.json)을 디스크에 저장한다.
+		public void NotifyChanged()					설정 변경을 UI에 즉시 알린다.
+
+역할:
+- AppConfig 보관
+- WatchList 관리
+- UI에 즉시 반영되는 변경 이벤트 제공
+- 디스크 저장과 UI 반영을 분리
+
+핵심 개념:
+- Save()        : 디스크 IO 전용
+- NotifyChanged(): UI 즉시 반영용 이벤트
+
+----------------------------------------
+특히 주의해서 볼 부분:
+- WatchItem : INotifyPropertyChanged 구현
+- DisplayText (Name (Code) 표시)
+- List<T> vs ObservableCollection 구조 선택 이유
+
+
+========================================
+3. MainWindow.xaml / MainWindow.xaml.cs
+========================================
+주가를 실제로 보여주는 창.
+
+namespace KRStockTray.Client.UI
+	public partial class MainWindow : Window, INotifyPropertyChanged					: Window — WPF 창이다
+		protected void OnPropertyChanged(string? name = null)
+		public ObservableCollection<QuoteRowViewModel> Quotes { get; } = new ()
+		public void AttachPoller(QuotePoller poller)
+		public MainWindow(SettingsService settings, KrSymbolCacheService krSymbols)
+		public double WindowOpacity
+		private void RootBorder_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		public void UpdateQuotes(IEnumerable<QuoteRowViewModel> rows)
+		protected override void OnClosing(CancelEventArgs e)
+		private void RootBorder_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+		private void SaveWindowPosition(bool debounced)
+		private void DebouncedSave()
+		public double EffectiveOpacity
+		private void RootBorder_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+		private void RootBorder_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+
+역할:
+- QuoteRowViewModel 리스트 표시
+- 마우스 오버 시 투명도 제어
+- 창 이동 시 위치 저장
+- 우클릭 → 설정창 열기
+
+중요 포인트:
+- 시작 시 큰 빈 창이 보이지 않도록
+  Loaded 이벤트에서 Hide 처리
+- EffectiveOpacity 계산 방식
+- SettingsService.OnConfigChanged 구독
+
+
+========================================
+4. QuotePoller.cs
+========================================
+'심장' 역할을 하는 백그라운드 서비스.
+
+역할:
+- 서버에서 주기적으로 시세 조회
+- WatchList 기반으로 종목 선택
+- MainWindow.UpdateQuotes 호출
+- Tray 텍스트 순환 표시
+
+읽을 때 포인트:
+- LoopAsync는 절대 죽지 않게 설계됨
+- FetchOnceAsync 내부 try/catch 구조
+- UI 업데이트는 반드시 Dispatcher 사용
+
+
+========================================
+5. SettingsWindow.xaml / SettingsWindow.xaml.cs
+========================================
+설정 UI이자 WatchList 편집기.
+
+역할:
+- 종목 추가 / 삭제 / 순서 변경
+- 투명도 즉시 반영
+- AutoStart 설정
+
+핵심 설계:
+- UI 전용 ObservableCollection 사용
+- 변경 즉시 Config에 반영
+- 별도의 '저장 버튼' 개념 없음
+
+----------------------------------------
+주의할 점:
+- Drag & Drop은 ListViewItem 기준
+- WatchList와 UI 컬렉션 불일치 방지
+
+
+========================================
+6. Add / Search 관련 Window들
+========================================
+- AddByCodeWindow
+- SymbolSearchInputWindow
+- SymbolSearchResultWindow
+
+역할:
+- 종목 입력 UX 분리
+- 검색 → 선택 → 반영 구조
+
+이 부분은 UI/UX 개선 시 가장 많이 수정될 영역
+
+
+========================================
+7. ViewModels / Models
+========================================
+- QuoteRowViewModel
+- API 응답 모델들
+
+역할:
+- 서버 데이터 → UI 표시용 가공
+- 포맷, 색상, 텍스트 책임
+
+----------------------------------------
+설계 원칙:
+- UI 로직은 ViewModel까지만
+- API 원본 데이터는 그대로 쓰지 않는다
+
+
+========================================
+권장 읽기 순서 요약
+========================================
+1) App.xaml.cs
+2) SettingsService.cs
+3) MainWindow.xaml(.cs)
+4) QuotePoller.cs
+5) SettingsWindow.xaml(.cs)
+6) Add/Search 관련 Window
+7) ViewModels / Models
+
+========================================
+마지막 한 줄 요약
+========================================
+이 프로그램은
+'SettingsService를 중심으로
+UI와 Poller가 느슨하게 연결된
+이벤트 기반 데스크톱 앱'이다.

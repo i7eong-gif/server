@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+
+# Fly
+.fly/
+
+bin/
+obj/
+.vs/
+
+*.user
+*.suo
+*.cache
+*.exe
+*.zip

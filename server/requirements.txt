@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+httpx
+requests
+beautifulsoup4
+pykrx
+finance-datareader
+anyio
+python-multipart

@@ -1,0 +1,28 @@
+﻿<Window x:Class="KRStockTray.Client.UI.SymbolSearchInputWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="종목 검색"
+        Width="320" Height="150"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+
+    <StackPanel Margin="12">
+        <TextBlock Text="종목명을 입력하세요" Margin="0,0,0,6"/>
+
+        <TextBox x:Name="QueryBox"
+                 Height="24"
+                 KeyDown="QueryBox_KeyDown"/>
+
+        <StackPanel Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+            <Button Content="검색"
+                    Width="80"
+                    Margin="0,0,6,0"
+                    Click="Search_Click"/>
+            <Button Content="취소"
+                    Width="80"
+                    Click="Cancel_Click"/>
+        </StackPanel>
+    </StackPanel>
+</Window>
