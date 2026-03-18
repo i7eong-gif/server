@@ -1,4 +1,4 @@
-"""Serial Repository (SQLite)
+"""Serial Repository (PostgreSQL)
 
 역할:
 - serials 테이블 CRUD
@@ -20,16 +20,10 @@
 
 from __future__ import annotations
 
-import sqlite3
 from typing import List, Optional, Tuple
-from datetime import datetime
 from app.policies.plans import VALID_PLANS
-from app.core.config import get_db_path
+from app.core.db import get_conn
 from app.serial.code import normalize_serial
-
-
-def _get_conn():
-    return sqlite3.connect(get_db_path(), check_same_thread=False)
 
 
 def insert(
@@ -38,7 +32,7 @@ def insert(
     issued_at: str,
     expire_at: Optional[str],
 ):
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
@@ -46,7 +40,7 @@ def insert(
             INSERT INTO serials
               (serial, plan, is_active, issued_at, expire_at, revoked_at, device_hash, activated_at, last_seen_at)
             VALUES
-              (?, ?, 1, ?, ?, NULL, NULL, NULL, NULL)
+              (%s, %s, 1, %s, %s, NULL, NULL, NULL, NULL)
             """,
             (serial, plan, issued_at, expire_at),
         )
@@ -57,14 +51,14 @@ def insert(
 
 def get_by_serial(serial: str) -> Optional[Tuple]:
     """(serial, plan, is_active, expire_at, device_hash, activated_at)"""
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """
             SELECT serial, plan, is_active, expire_at, device_hash, activated_at
             FROM serials
-            WHERE serial = ?
+            WHERE serial = %s
             """,
             (serial,),
         )
@@ -83,14 +77,14 @@ def get_active_by_device(device_hash: str) -> Optional[Tuple]:
     if not device_hash:
         return None
 
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """
             SELECT serial, plan, is_active, expire_at, device_hash, activated_at
             FROM serials
-            WHERE device_hash = ? AND is_active = 1
+            WHERE device_hash = %s AND is_active = 1
             ORDER BY issued_at DESC
             LIMIT 1
             """,
@@ -102,7 +96,7 @@ def get_active_by_device(device_hash: str) -> Optional[Tuple]:
 
 
 def list_serials() -> List[Tuple]:
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
@@ -118,14 +112,14 @@ def list_serials() -> List[Tuple]:
 
 
 def deactivate(serial: str, revoked_at: str):
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """
             UPDATE serials
-            SET is_active = 0, revoked_at = ?
-            WHERE serial = ?
+            SET is_active = 0, revoked_at = %s
+            WHERE serial = %s
             """,
             (revoked_at, serial),
         )
@@ -139,23 +133,23 @@ def update_serial(
     plan: str | None = None,
     expire_at: str | None = None,
 ):
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
 
         fields = []
         params = []
         if plan is not None:
-            fields.append("plan = ?")
+            fields.append("plan = %s")
             params.append(plan)
         if expire_at is not None:
-            fields.append("expire_at = ?")
+            fields.append("expire_at = %s")
             params.append(expire_at)
         if not fields:
             return
 
         params.append(serial)
-        sql = f"UPDATE serials SET {', '.join(fields)} WHERE serial = ?"
+        sql = f"UPDATE serials SET {', '.join(fields)} WHERE serial = %s"
         cur.execute(sql, params)
         conn.commit()
     finally:
@@ -163,14 +157,14 @@ def update_serial(
 
 
 def bind_device(serial: str, device_hash: str, activated_at: str):
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """
             UPDATE serials
-            SET device_hash = ?, activated_at = ?, last_seen_at = ?
-            WHERE serial = ?
+            SET device_hash = %s, activated_at = %s, last_seen_at = %s
+            WHERE serial = %s
             """,
             (device_hash, activated_at, activated_at, serial),
         )
@@ -180,14 +174,14 @@ def bind_device(serial: str, device_hash: str, activated_at: str):
 
 
 def touch(serial: str, last_seen_at: str):
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """
             UPDATE serials
-            SET last_seen_at = ?
-            WHERE serial = ?
+            SET last_seen_at = %s
+            WHERE serial = %s
             """,
             (last_seen_at, serial),
         )
@@ -198,14 +192,14 @@ def touch(serial: str, last_seen_at: str):
 
 def reset_device_binding(serial: str):
     """기기 바인딩 초기화(관리자용)."""
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """
             UPDATE serials
             SET device_hash = NULL, activated_at = NULL
-            WHERE serial = ?
+            WHERE serial = %s
             """,
             (serial,),
         )

@@ -22,13 +22,9 @@ DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 # -------------------------------------------------
-# 4. DB 경로 (런타임 결정)
+# 4. DB
 # -------------------------------------------------
-DEFAULT_DB_PATH = str(DATA_DIR / "app.db")
-
-
-def get_db_path() -> str:
-    return os.getenv("DB_PATH", DEFAULT_DB_PATH)
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 
 # -------------------------------------------------
