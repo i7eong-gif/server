@@ -10,3 +10,5 @@ services:
         value: prod
       - key: ADMIN_TOKEN
         generateValue: true
+      - key: DATABASE_URL
+        sync: false
