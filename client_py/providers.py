@@ -33,7 +33,7 @@ class QuoteProviderKR:
     def _is_regular_market(now: Optional[datetime] = None) -> bool:
         now = now or datetime.now(KST)
         t = now.time()
-        return time(9, 0) <= t <= time(15, 30)
+        return time(9, 1) <= t <= time(15, 19) 
 
     # -------------------------------------------------
     # 외부 호출
@@ -67,21 +67,29 @@ class QuoteProviderKR:
             # ============================
             # 1️⃣ 가격 선택
             # ============================
-            price = None
+            use_nxt = False
 
             if self._is_regular_market(now):
                 price = self._extract_price(krx_block)
             else:
                 nxt_price = self._extract_price(nxt_block)
-                price = nxt_price if nxt_price else self._extract_price(krx_block)
+                if nxt_price:
+                    price = nxt_price
+                    use_nxt = True
+                else:
+                    price = self._extract_price(krx_block)
 
             if price is None:
                 return None
 
             # ============================
-            # 2️⃣ 전일가 (항상 KRX)
+            # 2️⃣ 전일가 (NXT 가격 사용 시 NXT 전일가, 아니면 KRX)
             # ============================
-            prev_close = self._extract_prev_close(krx_block)
+            prev_close = (
+                self._extract_prev_close(nxt_block) or self._extract_prev_close(krx_block)
+                if use_nxt
+                else self._extract_prev_close(krx_block)
+            )
 
             if prev_close is None:
                 return None
