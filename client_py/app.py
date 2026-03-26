@@ -62,7 +62,7 @@ LOG_PATH = os.path.join(BASE_DIR, "app.log")
 os.makedirs(BASE_DIR, exist_ok=True)
 
 # 라이선스 서버 URL (환경변수로 오버라이드 가능)
-LICENSE_SERVER_URL = os.environ.get("POSTOCK_LICENSE_SERVER", "http://127.0.0.1:8000")
+LICENSE_SERVER_URL = os.environ.get("POSTOCK_LICENSE_SERVER", "https://server-4imn.onrender.com")
 
 KST = pytz.timezone("Asia/Seoul")
 ET = pytz.timezone("US/Eastern")
@@ -311,8 +311,8 @@ def is_market_open(market: str, now: datetime | None = None) -> bool:
         end_t = dtime(15, 30)
     elif market == "US":
         tz = ET
-        start_t = dtime(9, 20)
-        end_t = dtime(16, 10)
+        start_t = dtime(9, 30)
+        end_t = dtime(16, 00)
     else:
         return False
 
@@ -361,18 +361,9 @@ class StockTrayApp:
 
         self._license_error: Optional[str] = None
 
-        if not self.license.serial:
-            # 시리얼 없음 → 트라이얼 발급 시도
-            ok = self.license.activate_trial()
-            if ok:
-                self.license.save_to_config(self.cfg)
-                save_config(self.cfg)
-            else:
-                self._license_error = (
-                    "서버에 연결하여 라이선스를 활성화하지 못했습니다.\n"
-                    "인터넷 연결 및 서버 상태를 확인하고 다시 시도해 주세요.\n\n"
-                    f"서버: {LICENSE_SERVER_URL}"
-                )
+        # 서버 wake-up (Render 무료 플랜: inactive 상태 해제)
+        # 실제 라이선스 처리는 1분 후 _activate_and_validate 에서 수행
+        threading.Thread(target=self._wake_server, daemon=True).start()
         # ---- 라이선스 초기화 끝 ----
 
         # providers
@@ -455,6 +446,34 @@ class StockTrayApp:
             return
 
         self.license.handle_notice(notice)
+
+    # -----------------------------------------------------
+    # 서버 wake-up + 라이선스 활성화 (1분 후 실행)
+    # -----------------------------------------------------
+    def _wake_server(self):
+        """서버 wake-up 요청 (Render inactive 상태 해제용)."""
+        try:
+            requests.get(f"{LICENSE_SERVER_URL}/", timeout=30)
+            logging.info("License: server woke up")
+        except Exception as e:
+            logging.warning("License: wake-up failed: %s", e)
+
+    def _activate_and_validate(self):
+        """1분 후 실행: 시리얼 없으면 trial 발급 → 서버 검증."""
+        if not self.license.serial:
+            ok = self.license.activate_trial()
+            if ok:
+                self.license.save_to_config(self.cfg)
+                save_config(self.cfg)
+            else:
+                msg = (
+                    "서버에 연결하여 라이선스를 활성화하지 못했습니다.\n"
+                    "인터넷 연결 및 서버 상태를 확인하고 다시 시도해 주세요.\n\n"
+                    f"서버: {LICENSE_SERVER_URL}"
+                )
+                self.tk_queue.put(("LICENSE_ERROR_QUIT", msg))
+                return
+        self._validate_license()
 
     # -----------------------------------------------------
     # Tray menu
@@ -738,6 +757,9 @@ class StockTrayApp:
                         if updated:
                             save_config(self.cfg)
                             self.tk_queue.put("REFRESH_MENU")
+                    elif op == "LICENSE_ERROR_QUIT":
+                        _, msg = cmd
+                        self._show_license_error_and_quit(msg)
                     continue
 
                 if cmd == "SERIAL_EXPIRED":
@@ -935,13 +957,16 @@ class StockTrayApp:
                 fg = "#c00000" if pct > 0 else "#0040c0" if pct < 0 else "black"
 
                 if row["market"] == "US":
+                    diff_str = f"{diff:+.2f}" if diff != 0 else "0.00"
                     row["price_lbl"].config(text=f"{price:,.2f}", foreground=fg)
-                    row["diff_lbl"].config(text=f"{diff:+.2f}", foreground=fg)
+                    row["diff_lbl"].config(text=diff_str, foreground=fg)
                 else:
+                    diff_str = f"{int(diff):+,d}" if diff != 0 else "0"
                     row["price_lbl"].config(text=f"{int(price):,}", foreground=fg)
-                    row["diff_lbl"].config(text=f"{int(diff):+,d}", foreground=fg)
+                    row["diff_lbl"].config(text=diff_str, foreground=fg)
 
-                row["pct_lbl"].config(text=f"{pct:+.2f}%", foreground=fg)
+                pct_str = f"{pct:+.2f}%" if pct != 0 else "0.00%"
+                row["pct_lbl"].config(text=pct_str, foreground=fg)
 
                 if vol is not None:
                     row["vol_lbl"].config(text=f"{vol:,}")
@@ -1318,7 +1343,7 @@ class StockTrayApp:
         # worker 시작
         self.tk_root.after(800, self.worker.start)
 
-        # 시작 1분 후 서버에 시리얼 유효성 검증
-        self.tk_root.after(60_000, lambda: self.executor.submit(self._validate_license))
+        # 시작 1분 후 라이선스 활성화 및 서버 검증 (서버 wake-up 이후)
+        self.tk_root.after(60_000, lambda: self.executor.submit(self._activate_and_validate))
 
         self.tk_root.mainloop()

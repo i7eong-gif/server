@@ -1,6 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
-from PyInstaller.utils.hooks import collect_submodules
 from pathlib import Path
 
 project_root = Path(os.getcwd())
@@ -24,11 +23,17 @@ a = Analysis(
         'tkinter',
         'tkinter.ttk',
         'concurrent.futures',
-    ] + collect_submodules('win11toast'),
+    ],
     excludes=[
         'tkinter.test',
         'pytest',
         'unittest',
+        'numpy',
+        'pandas',
+        'matplotlib',
+        'scipy',
+        'setuptools',
+        'distutils',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
