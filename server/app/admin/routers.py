@@ -132,6 +132,8 @@ def update_serial_route(
         fields["expire_at"] = (
             datetime.utcnow() + timedelta(days=body.expire_days)
         ).isoformat()
+        fields["is_active"] = 1
+        fields["revoked_at"] = None
 
     if not fields:
         return success({"serial": serial, "updated": False})

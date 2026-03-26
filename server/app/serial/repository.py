@@ -132,6 +132,8 @@ def update_serial(
     serial: str,
     plan: str | None = None,
     expire_at: str | None = None,
+    is_active: int | None = None,
+    revoked_at: str | None = ...,  # ... = 전달 안 함 구분용
 ):
     conn = get_conn()
     try:
@@ -145,6 +147,12 @@ def update_serial(
         if expire_at is not None:
             fields.append("expire_at = %s")
             params.append(expire_at)
+        if is_active is not None:
+            fields.append("is_active = %s")
+            params.append(is_active)
+        if revoked_at is not ...:
+            fields.append("revoked_at = %s")
+            params.append(revoked_at)
         if not fields:
             return
 
