@@ -1,4 +1,4 @@
-"""Serial Repository (PostgreSQL)
+"""Serial Repository (SQLite)
 
 역할:
 - serials 테이블 CRUD
@@ -40,7 +40,7 @@ def insert(
             INSERT INTO serials
               (serial, plan, is_active, issued_at, expire_at, revoked_at, device_hash, activated_at, last_seen_at)
             VALUES
-              (%s, %s, 1, %s, %s, NULL, NULL, NULL, NULL)
+              (?, ?, 1, ?, ?, NULL, NULL, NULL, NULL)
             """,
             (serial, plan, issued_at, expire_at),
         )
@@ -58,7 +58,7 @@ def get_by_serial(serial: str) -> Optional[Tuple]:
             """
             SELECT serial, plan, is_active, expire_at, device_hash, activated_at
             FROM serials
-            WHERE serial = %s
+            WHERE serial = ?
             """,
             (serial,),
         )
@@ -84,7 +84,7 @@ def get_active_by_device(device_hash: str) -> Optional[Tuple]:
             """
             SELECT serial, plan, is_active, expire_at, device_hash, activated_at
             FROM serials
-            WHERE device_hash = %s AND is_active = 1
+            WHERE device_hash = ? AND is_active = 1
             ORDER BY issued_at DESC
             LIMIT 1
             """,
@@ -118,8 +118,8 @@ def deactivate(serial: str, revoked_at: str):
         cur.execute(
             """
             UPDATE serials
-            SET is_active = 0, revoked_at = %s
-            WHERE serial = %s
+            SET is_active = 0, revoked_at = ?
+            WHERE serial = ?
             """,
             (revoked_at, serial),
         )
@@ -142,22 +142,22 @@ def update_serial(
         fields = []
         params = []
         if plan is not None:
-            fields.append("plan = %s")
+            fields.append("plan = ?")
             params.append(plan)
         if expire_at is not None:
-            fields.append("expire_at = %s")
+            fields.append("expire_at = ?")
             params.append(expire_at)
         if is_active is not None:
-            fields.append("is_active = %s")
+            fields.append("is_active = ?")
             params.append(is_active)
         if revoked_at is not ...:
-            fields.append("revoked_at = %s")
+            fields.append("revoked_at = ?")
             params.append(revoked_at)
         if not fields:
             return
 
         params.append(serial)
-        sql = f"UPDATE serials SET {', '.join(fields)} WHERE serial = %s"
+        sql = f"UPDATE serials SET {', '.join(fields)} WHERE serial = ?"
         cur.execute(sql, params)
         conn.commit()
     finally:
@@ -171,8 +171,8 @@ def bind_device(serial: str, device_hash: str, activated_at: str):
         cur.execute(
             """
             UPDATE serials
-            SET device_hash = %s, activated_at = %s, last_seen_at = %s
-            WHERE serial = %s
+            SET device_hash = ?, activated_at = ?, last_seen_at = ?
+            WHERE serial = ?
             """,
             (device_hash, activated_at, activated_at, serial),
         )
@@ -188,8 +188,8 @@ def touch(serial: str, last_seen_at: str):
         cur.execute(
             """
             UPDATE serials
-            SET last_seen_at = %s
-            WHERE serial = %s
+            SET last_seen_at = ?
+            WHERE serial = ?
             """,
             (last_seen_at, serial),
         )
@@ -207,7 +207,7 @@ def reset_device_binding(serial: str):
             """
             UPDATE serials
             SET device_hash = NULL, activated_at = NULL
-            WHERE serial = %s
+            WHERE serial = ?
             """,
             (serial,),
         )

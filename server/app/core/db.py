@@ -11,12 +11,14 @@ DB Initialization / Migration
 
 from __future__ import annotations
 
-import psycopg2
-from app.core.config import DATABASE_URL
+import sqlite3
+from app.core.config import DB_PATH
 
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def init_db() -> None:
@@ -30,16 +32,7 @@ def init_db() -> None:
 def _ensure_serials_table(cur) -> None:
     cur.execute(
         """
-        SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'serials'
-        """
-    )
-    if cur.fetchone() is not None:
-        return
-
-    cur.execute(
-        """
-        CREATE TABLE serials (
+        CREATE TABLE IF NOT EXISTS serials (
             serial TEXT PRIMARY KEY,
             plan TEXT NOT NULL,
             is_active INTEGER NOT NULL DEFAULT 1,
@@ -52,5 +45,9 @@ def _ensure_serials_table(cur) -> None:
         )
         """
     )
-    cur.execute("CREATE INDEX idx_serials_active ON serials(is_active)")
-    cur.execute("CREATE INDEX idx_serials_expire ON serials(expire_at)")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_serials_active ON serials(is_active)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_serials_expire ON serials(expire_at)"
+    )

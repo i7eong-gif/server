@@ -24,7 +24,7 @@ DATA_DIR.mkdir(exist_ok=True)
 # -------------------------------------------------
 # 4. DB
 # -------------------------------------------------
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+DB_PATH = os.getenv("DB_PATH", str(DATA_DIR / "app.db"))
 
 
 # -------------------------------------------------
